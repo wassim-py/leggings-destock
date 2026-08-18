@@ -1,16 +1,51 @@
 // AeroFlex Application JavaScript
 
 // --- CLOUD DATABASE CONFIGURATION (SUPABASE) ---
-// Go to supabase.com -> Project Settings -> API, and copy/paste your keys here:
-const SUPABASE_URL = "https://rjnbiplmefbnbaxtxvkf.supabase.co"; 
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqbmJpcGxtZWZibmJheHR4dmtmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0NDU5NDksImV4cCI6MjEwMDAyMTk0OX0.rMMJ5nvF2Mx5D7nziYVrcULy03NOBFUCkW2bxFka-6o";
+// Default credentials (can be updated dynamically in Owner Portal -> Security & Cloud Settings)
+const DEFAULT_SUPABASE_URL = "https://rjnbiplmefbnbaxtxvkf.supabase.co"; 
+const DEFAULT_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqbmJpcGxtZWZibmJheHR4dmtmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0NDU5NDksImV4cCI6MjEwMDAyMTk0OX0.rMMJ5nvF2Mx5D7nziYVrcULy03NOBFUCkW2bxFka-6o";
 
 let supabaseClient = null;
 let globalDb = null;
+let isCloudConnected = false;
+let isSyncing = false;
+let consecutiveSyncFailures = 0;
+let lastCloudSyncTime = null;
 
-if (SUPABASE_URL && SUPABASE_ANON_KEY && typeof supabase !== 'undefined') {
-    supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+function getSupabaseConfig() {
+    let localDb = null;
+    try {
+        const raw = localStorage.getItem(DB_KEY);
+        if (raw) localDb = JSON.parse(raw);
+    } catch (e) {}
+    
+    return {
+        url: (localDb && localDb.security && localDb.security.supabaseUrl) || DEFAULT_SUPABASE_URL,
+        anonKey: (localDb && localDb.security && localDb.security.supabaseAnonKey) || DEFAULT_SUPABASE_ANON_KEY
+    };
 }
+
+function initSupabaseClient(customUrl, customKey) {
+    const config = getSupabaseConfig();
+    const targetUrl = (customUrl || config.url || '').trim();
+    const targetKey = (customKey || config.anonKey || '').trim();
+    
+    if (targetUrl && targetKey && typeof supabase !== 'undefined') {
+        try {
+            supabaseClient = supabase.createClient(targetUrl, targetKey);
+            return true;
+        } catch (e) {
+            console.warn('Failed to initialize Supabase client:', e);
+            supabaseClient = null;
+            return false;
+        }
+    }
+    supabaseClient = null;
+    return false;
+}
+
+// Initial client initialization
+initSupabaseClient();
 
 // --- TELEGRAM BOT NOTIFICATIONS (SECURED SYSTEM) ---
 const FALLBACK_TELEGRAM_TOKEN = "8677436730:AAE6-sI41AKfu9YbcblchP9VaKaoWQ5YdZI"; 
@@ -36,7 +71,9 @@ const LOCKOUT_KEY = 'aeroflex_lockout_until';
 const DEFAULT_DB = {
     security: {
         // SHA-256 hash of "wassim"
-        hash: '07edcf9f709cd2f4e422ad8a967c1c516dd856333b5eef097285a7e9192ecdab'
+        hash: '07edcf9f709cd2f4e422ad8a967c1c516dd856333b5eef097285a7e9192ecdab',
+        supabaseUrl: DEFAULT_SUPABASE_URL,
+        supabaseAnonKey: DEFAULT_SUPABASE_ANON_KEY
     },
     products: [
         {
@@ -123,31 +160,15 @@ const DEFAULT_DB = {
             customerName: 'Sarah Jenkins',
             customerPhone: '0671829384',
             customerAddress: '45 Rue de la Victoire, Paris',
-            productId: 'aeroflex-sculpt',
-            productName: 'AeroFlex Ultra-Sculpt Leggings',
-            color: 'Midnight Black',
+            productId: 'everyday-classic',
+            productName: 'Gymshark Everyday Simple Cut',
+            color: 'Timeless Black',
             size: 'M',
-            price: 5910, // (5900 - 10% Welcome Discount) + 600 shipping
+            price: 5910,
             promoCode: 'WELCOME10',
             shippingName: 'Standard Delivery (48 Wilayas)',
             shippingPrice: 600,
             status: 'Pending'
-        },
-        {
-            id: 'ORD-9102',
-            date: '2026-07-18T11:42:00Z',
-            customerName: 'Amina Al-Farsi',
-            customerPhone: '0555981243',
-            customerAddress: 'Flat 12, Marina Heights, Dubai',
-            productId: 'aeroflex-sculpt',
-            productName: 'AeroFlex Ultra-Sculpt Leggings',
-            color: 'Electric Orchid',
-            size: 'S',
-            price: 6300, // 5900 + 400 shipping
-            promoCode: '',
-            shippingName: 'Express Delivery (Algiers)',
-            shippingPrice: 400,
-            status: 'Shipped'
         }
     ]
 };
@@ -159,9 +180,9 @@ const ADMIN_AVAILABLE_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
 // Selected items in the dynamic form pill selectors
 let selectedPillColors = [];
 let selectedPillSizes = [];
-let selectedProductImages = []; // Holds list of image references for product being edited/added
-let modalCarouselIndex = 0; // Tracks currently active slide index inside the product editor modal
-let expandedStockProductIds = new Set(); // Tracks expanded stock accordion product IDs across render updates
+let selectedProductImages = [];
+let modalCarouselIndex = 0;
+let expandedStockProductIds = new Set();
 
 // --- CRYPTOGRAPHIC UTILS ---
 async function sha256(message) {
@@ -172,63 +193,124 @@ async function sha256(message) {
     return hashHex;
 }
 
-// --- SUPABASE CLOUD SYNC OPERATIONS ---
-async function fetchDbFromSupabase() {
+// --- CLOUD CONNECTION STATUS UI BADGE ---
+function updateCloudStatusBadge(online, label) {
+    const badge = document.getElementById('admin-connection-status');
+    if (!badge) return;
+    
+    if (online) {
+        badge.innerHTML = `<span class="status-dot" style="background: #22c55e; box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);"></span> Database Online (Cloud Synced)`;
+        badge.style.color = 'var(--text-secondary)';
+    } else {
+        badge.innerHTML = `<span class="status-dot" style="background: #eab308; box-shadow: 0 0 8px rgba(234, 179, 8, 0.6);"></span> ${label || 'Offline / Local Cache'}`;
+        badge.style.color = '#d97706';
+    }
+}
+
+// --- SUPABASE CLOUD SYNC OPERATIONS (FAST & NON-BLOCKING) ---
+async function fetchDbFromSupabase(timeoutMs = 3500) {
     if (!supabaseClient) {
-        console.log('Supabase client not initialized. Using localStorage.');
-        globalDb = getLocalStorageDb();
-        return;
+        initSupabaseClient();
     }
     
+    if (!supabaseClient) {
+        updateCloudStatusBadge(false, 'Supabase Not Initialized');
+        globalDb = getLocalStorageDb();
+        return globalDb;
+    }
+    
+    // Timeout wrapper to guarantee that network lag or paused endpoints never hang the UI
+    let timerId;
+    const timeoutPromise = new Promise((_, reject) => {
+        timerId = setTimeout(() => reject(new Error('Cloud fetch timed out (' + timeoutMs + 'ms)')), timeoutMs);
+    });
+    
     try {
-        const { data, error } = await supabaseClient
+        const fetchPromise = supabaseClient
             .from('store_db')
             .select('data')
             .eq('id', 1)
             .single();
             
+        const response = await Promise.race([fetchPromise, timeoutPromise]);
+        clearTimeout(timerId);
+        
+        const { data, error } = response;
         if (error) throw error;
         
         if (data && data.data && Object.keys(data.data).length > 0) {
             globalDb = sanitizeDb(data.data);
-            console.log('Database loaded successfully from Supabase Cloud.');
+            localStorage.setItem(DB_KEY, JSON.stringify(globalDb));
+            isCloudConnected = true;
+            consecutiveSyncFailures = 0;
+            lastCloudSyncTime = Date.now();
+            updateCloudStatusBadge(true, 'Cloud Synced');
+            console.log('Database synced from Supabase Cloud successfully.');
         } else {
-            console.warn('Supabase row empty. Seeding cloud database with defaults...');
+            console.warn('Supabase store_db row empty. Seeding cloud database with defaults...');
             globalDb = DEFAULT_DB;
             await syncDbToSupabase(DEFAULT_DB);
+            isCloudConnected = true;
+            consecutiveSyncFailures = 0;
+            lastCloudSyncTime = Date.now();
+            updateCloudStatusBadge(true, 'Cloud Seeded');
         }
+        return globalDb;
     } catch (err) {
-        console.error('Failed to load Supabase cloud data. Falling back to local cache:', err);
+        clearTimeout(timerId);
+        isCloudConnected = false;
+        consecutiveSyncFailures++;
+        console.warn('Supabase Cloud unreachable (' + (err.message || err) + '). Using local cache.');
+        updateCloudStatusBadge(false, 'Offline Cache (Cloud Unreachable)');
         globalDb = getLocalStorageDb();
+        return globalDb;
     }
 }
 
-async function syncDbToSupabase(db) {
-    // Always save to localStorage as local backup
+async function syncDbToSupabase(db, timeoutMs = 3500) {
+    // 1. Instant local persistence
     localStorage.setItem(DB_KEY, JSON.stringify(db));
     
+    if (!supabaseClient) {
+        initSupabaseClient();
+    }
     if (!supabaseClient) return;
     
-    // Create a copy of the database payload so we don't mutate global state
+    // Create a safe clone of payload
     const payload = JSON.parse(JSON.stringify(db));
-    
-    // Attach authentication token if logged in
     const rawPin = sessionStorage.getItem('aeroflex_admin_raw_pin');
     if (rawPin) {
         if (!payload.security) payload.security = {};
         payload.security.authToken = rawPin;
     }
     
+    let timerId;
+    const timeoutPromise = new Promise((_, reject) => {
+        timerId = setTimeout(() => reject(new Error('Cloud sync timed out')), timeoutMs);
+    });
+    
     try {
-        const { error } = await supabaseClient
+        const updatePromise = supabaseClient
             .from('store_db')
             .update({ data: payload })
             .eq('id', 1);
             
+        const response = await Promise.race([updatePromise, timeoutPromise]);
+        clearTimeout(timerId);
+        
+        const { error } = response;
         if (error) throw error;
+        
+        isCloudConnected = true;
+        consecutiveSyncFailures = 0;
+        lastCloudSyncTime = Date.now();
+        updateCloudStatusBadge(true, 'Cloud Synced');
     } catch (err) {
-        console.error('Failed to sync database to Supabase Cloud:', err);
-        showToast('Offline backup updated locally.', 'info');
+        clearTimeout(timerId);
+        isCloudConnected = false;
+        consecutiveSyncFailures++;
+        console.warn('Could not push updates to Supabase Cloud:', err.message || err);
+        updateCloudStatusBadge(false, 'Offline Cache (Saved Locally)');
     }
 }
 
@@ -440,11 +522,9 @@ let lockoutInterval = null;
 let lastActivityTime = Date.now();
 const INACTIVITY_TIMEOUT = 10 * 60 * 1000; // 10 minutes in milliseconds
 
-// --- INITIAL LOADING ---
-document.addEventListener('DOMContentLoaded', async () => {
-    await fetchDbFromSupabase(); // Wait for cloud database fetch
-    
-    // Sync storeState to active homepage product
+// --- INITIAL LOADING (INSTANT LOCAL RENDER + BACKGROUND CLOUD SYNC) ---
+document.addEventListener('DOMContentLoaded', () => {
+    // 1. Instant local render (< 50ms) - Never block UI on remote network calls
     const db = getDb();
     syncStoreStateWithActiveProduct(db);
     
@@ -461,7 +541,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Populate customer shipping select dropdown
     populateShippingDropdown();
     
-    // Initial Render
+    // Immediate Initial Render
     renderPublicStore();
     
     // Start countdown timer
@@ -479,24 +559,51 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Render lucide icons
     lucide.createIcons();
 
-    // Poll Supabase for database updates every 5 seconds to sync stock and orders in real-time
-    setInterval(async () => {
-        if (!supabaseClient) return;
-        
-        const isAdminView = window.location.hash.startsWith('#admin');
-        
-        if (isAdminView) {
-            const isAuthenticated = sessionStorage.getItem(AUTH_KEY) === 'true';
-            if (isAuthenticated && !isAnyModalOpen()) {
-                await fetchDbFromSupabase();
-                renderAdminDashboard();
-            }
-        } else {
-            await fetchDbFromSupabase();
-            renderPublicStore();
+    // 2. Fetch fresh cloud database asynchronously in background
+    fetchDbFromSupabase(3500).then(() => {
+        const freshDb = getDb();
+        syncStoreStateWithActiveProduct(freshDb);
+        populateShippingDropdown();
+        renderPublicStore();
+        if (window.location.hash.startsWith('#admin')) {
+            renderAdminDashboard();
         }
-    }, 5000);
+    }).catch(() => {});
+
+    // 3. Start adaptive real-time sync polling
+    setupRealtimePolling();
 });
+
+let pollingTimerId = null;
+
+function setupRealtimePolling() {
+    if (pollingTimerId) clearInterval(pollingTimerId);
+    
+    // If backend is unreachable/paused, poll less frequently (every 25s) to save battery and network
+    const intervalMs = consecutiveSyncFailures > 2 ? 25000 : 5000;
+    
+    pollingTimerId = setInterval(async () => {
+        if (!supabaseClient || isSyncing) return;
+        
+        isSyncing = true;
+        try {
+            const isAdminView = window.location.hash.startsWith('#admin');
+            
+            if (isAdminView) {
+                const isAuthenticated = sessionStorage.getItem(AUTH_KEY) === 'true';
+                if (isAuthenticated && !isAnyModalOpen()) {
+                    await fetchDbFromSupabase(3000);
+                    renderAdminDashboard();
+                }
+            } else {
+                await fetchDbFromSupabase(3000);
+                renderPublicStore();
+            }
+        } finally {
+            isSyncing = false;
+        }
+    }, intervalMs);
+}
 
 function isAnyModalOpen() {
     const modals = [
@@ -2973,6 +3080,95 @@ function initSecuritySettings() {
             saveDb(db);
             
             showToast('Telegram credentials updated successfully.', 'success');
+        });
+    }
+
+    // --- SUPABASE CLOUD SYNC CONFIGURATION IN ADMIN ---
+    const sbConfig = getSupabaseConfig();
+    const sbUrlField = document.getElementById('supabase-config-url');
+    const sbKeyField = document.getElementById('supabase-config-anonkey');
+    const sbAlertBox = document.getElementById('supabase-status-alert');
+    const sbAlertText = document.getElementById('supabase-status-alert-text');
+    const testSbBtn = document.getElementById('btn-test-supabase');
+    const sbForm = document.getElementById('admin-supabase-config-form');
+
+    const updateSupabaseStatusAlert = (online, msg) => {
+        if (!sbAlertBox || !sbAlertText) return;
+        if (online) {
+            sbAlertBox.style.background = 'rgba(34, 197, 94, 0.1)';
+            sbAlertBox.style.borderColor = 'rgba(34, 197, 94, 0.3)';
+            sbAlertBox.style.color = '#15803d';
+            sbAlertText.innerHTML = `<strong>🟢 Cloud Connected:</strong> ${msg || 'Live synchronization active across PC, Mobile, and all devices.'}`;
+        } else {
+            sbAlertBox.style.background = 'rgba(234, 179, 8, 0.1)';
+            sbAlertBox.style.borderColor = 'rgba(234, 179, 8, 0.3)';
+            sbAlertBox.style.color = '#b45309';
+            sbAlertText.innerHTML = `<strong>⚠️ Cloud Offline / Paused:</strong> ${msg || 'Changes are saved in local cache. If your Supabase free tier project was paused, click Restore on supabase.com dashboard or enter your new credentials below.'}`;
+        }
+        lucide.createIcons();
+    };
+
+    if (sbUrlField) sbUrlField.value = sbConfig.url;
+    if (sbKeyField) sbKeyField.value = sbConfig.anonKey;
+    updateSupabaseStatusAlert(isCloudConnected);
+
+    if (sbForm) {
+        sbForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const newUrl = sbUrlField.value.trim();
+            const newKey = sbKeyField.value.trim();
+
+            if (!newUrl || !newKey) {
+                showToast('Please provide both Supabase URL and Anon Key.', 'error');
+                return;
+            }
+
+            const db = getDb();
+            if (!db.security) db.security = {};
+            db.security.supabaseUrl = newUrl;
+            db.security.supabaseAnonKey = newKey;
+            
+            initSupabaseClient(newUrl, newKey);
+            showToast('Testing and reconnecting to Supabase Cloud...', 'info');
+
+            const result = await fetchDbFromSupabase(5000);
+            if (isCloudConnected) {
+                saveDb(result);
+                updateSupabaseStatusAlert(true, 'Connected & fully synchronized with cloud.');
+                showToast('Supabase Cloud connected and synchronized!', 'success');
+            } else {
+                saveDb(db);
+                updateSupabaseStatusAlert(false, 'Saved locally, but connection to endpoint failed. Check URL/Key or unpause project.');
+                showToast('Saved locally. Cloud endpoint unreachable.', 'error');
+            }
+        });
+    }
+
+    if (testSbBtn) {
+        testSbBtn.addEventListener('click', async () => {
+            testSbBtn.disabled = true;
+            testSbBtn.innerHTML = '<i data-lucide="loader" class="spin"></i> Testing...';
+            lucide.createIcons();
+
+            const curUrl = sbUrlField ? sbUrlField.value.trim() : '';
+            const curKey = sbKeyField ? sbKeyField.value.trim() : '';
+            if (curUrl && curKey) {
+                initSupabaseClient(curUrl, curKey);
+            }
+
+            await fetchDbFromSupabase(5000);
+            if (isCloudConnected) {
+                updateSupabaseStatusAlert(true, 'Live connection confirmed! Stock, products, and orders are in sync.');
+                showToast('Cloud connection verified successfully!', 'success');
+                renderAdminDashboard();
+            } else {
+                updateSupabaseStatusAlert(false, 'Unable to reach project. (If on free tier, project may be paused in supabase.com dashboard).');
+                showToast('Cloud connection failed. Check supabase.com project status.', 'error');
+            }
+
+            testSbBtn.disabled = false;
+            testSbBtn.innerHTML = '<i data-lucide="refresh-cw"></i> Test & Sync Now';
+            lucide.createIcons();
         });
     }
 }

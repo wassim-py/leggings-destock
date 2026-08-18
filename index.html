@@ -81,7 +81,7 @@
                     </div>
                     <div class="hero-image-container scroll-reveal">
                         <div class="glass-card hero-image-card">
-                            <video autoplay loop muted playsinline class="hero-img" style="max-width: 400px; width: 100%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: var(--radius);">
+                            <video autoplay loop muted playsinline preload="metadata" poster="assets/simple_leggings.jpg" class="hero-img" style="max-width: 400px; width: 100%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: var(--radius);">
                                 <source src="assets/Gymshark Training Straight Leg Leggings - Black.mp4" type="video/mp4">
                                 Your browser does not support the video tag.
                             </video>
@@ -517,7 +517,7 @@
                     <p id="admin-current-tab-desc">Monitor and adjust live stock counts for size/color variants.</p>
                 </div>
                 <div class="admin-header-actions">
-                    <span class="connection-status"><span class="status-dot"></span> Database Online (Local)</span>
+                    <span class="connection-status" id="admin-connection-status"><span class="status-dot"></span> Database Online (Local)</span>
                 </div>
             </header>
             
@@ -1028,6 +1028,48 @@
                                     <i data-lucide="shield-check"></i> Update Telegram Credentials
                                 </button>
                             </form>
+                        </div>
+                    </div>
+
+                    <!-- Configure Supabase Cloud Database (NEW CLOUD SYNC SETTINGS) -->
+                    <div class="admin-card" style="max-width: 500px; margin: 24px auto 0;">
+                        <div class="card-header">
+                            <h3>Cloud Database Sync (Supabase)</h3>
+                            <p>Connect and synchronize live stock, catalog products, and orders in real-time across all devices (PC, Mobile, Tablets).</p>
+                        </div>
+                        <div style="padding: 24px;">
+                            <div id="supabase-status-alert" style="padding: 12px 16px; border-radius: var(--radius-sm); margin-bottom: 20px; font-size: 0.85rem; line-height: 1.5; display: flex; align-items: flex-start; gap: 10px; background: rgba(234, 179, 8, 0.1); border: 1px solid rgba(234, 179, 8, 0.3); color: #b45309;">
+                                <i data-lucide="info" style="width: 18px; height: 18px; flex-shrink: 0; margin-top: 2px;"></i>
+                                <div id="supabase-status-alert-text">Checking cloud connection status...</div>
+                            </div>
+
+                            <form id="admin-supabase-config-form">
+                                <div class="form-group" style="margin-bottom: 16px;">
+                                    <label for="supabase-config-url">Supabase Project URL</label>
+                                    <div class="input-wrapper">
+                                        <i data-lucide="globe"></i>
+                                        <input type="url" id="supabase-config-url" required placeholder="https://your-project.supabase.co">
+                                    </div>
+                                </div>
+                                <div class="form-group" style="margin-bottom: 20px;">
+                                    <label for="supabase-config-anonkey">Supabase Anon Key</label>
+                                    <div class="input-wrapper">
+                                        <i data-lucide="key"></i>
+                                        <input type="password" id="supabase-config-anonkey" required placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...">
+                                    </div>
+                                </div>
+                                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                                    <button type="submit" class="btn btn-primary" style="flex: 1; min-width: 160px;">
+                                        <i data-lucide="save"></i> Save & Reconnect
+                                    </button>
+                                    <button type="button" class="btn btn-outline" id="btn-test-supabase" style="flex: 1; min-width: 160px;">
+                                        <i data-lucide="refresh-cw"></i> Test & Sync Now
+                                    </button>
+                                </div>
+                            </form>
+                            <div style="margin-top: 16px; font-size: 0.75rem; color: var(--text-muted); line-height: 1.5;">
+                                💡 <strong>Supabase Note:</strong> If your Supabase project was paused, open <a href="https://supabase.com/dashboard" target="_blank" style="color: var(--primary); text-decoration: underline;">supabase.com/dashboard</a> and click <em>"Restore project"</em>. Once restored, all devices will synchronize automatically.
+                            </div>
                         </div>
                     </div>
                 </div>
